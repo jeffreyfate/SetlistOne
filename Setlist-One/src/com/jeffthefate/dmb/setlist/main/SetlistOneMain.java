@@ -108,6 +108,9 @@ public class SetlistOneMain {
                         getExpireDateString()));
                 writeStringToFile(lastSong, lastSongFile);
             }
+            else if (readStringFromFile(lastSongFile).equals(lastSong)) {
+            	// TODO Push setlist anyhow, but no notification?
+            }
         }
     }
     
@@ -392,6 +395,18 @@ public class SetlistOneMain {
                                         // End current string
                                         if (setString.length() > 0)
                                             setString.append("\n");
+                                        // TODO Test this change
+                                        if (StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .startsWith("Encore") && !hasEncore) {
+                                            hasEncore = true;
+                                            if (!firstBreak) {
+                                                setString.append("\n");
+                                                firstBreak = true;
+                                            }
+                                        }
                                         setString.append(
                                             StringUtils.replaceChars(
                                                 StringUtils.strip(
@@ -537,7 +552,6 @@ public class SetlistOneMain {
         try {
             url += URLEncoder.encode("where={\"setDate\":{\"__type\":\"Date\",\"iso\":\"" + dateString + "\"}}", "US-ASCII");
         } catch (UnsupportedEncodingException e) {
-            // TODO Auto-generated catch block
             e.printStackTrace();
         }
         HttpGet httpGet = new HttpGet(url);
