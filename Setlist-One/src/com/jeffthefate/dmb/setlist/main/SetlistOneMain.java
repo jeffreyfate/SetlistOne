@@ -14,6 +14,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
@@ -62,6 +63,7 @@ import org.jsoup.select.Elements;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
@@ -83,8 +85,13 @@ public class SetlistOneMain {
         cal.setTimeInMillis(System.currentTimeMillis());
         System.out.println(cal.getTime().toString());
         System.out.println(Charset.defaultCharset().displayName());
-      //archiveSetlists();
-        String setlistText = latestSetlist("https://whsec1.davematthewsband.com/backstage.asp");
+        archiveSetlists();
+        /*
+        String setlistText;
+        if (args.length > 0)
+        	setlistText = latestSetlist(args[0]);
+        else	
+        	setlistText = latestSetlist("https://whsec1.davematthewsband.com/backstage.asp");
         //String setlistText = latestSetlist("http://jeffthefate.com/dmb-trivia-test");
         System.out.println(setlistText);
         currDateString = getSetlistDateString(setlistText);
@@ -101,17 +108,22 @@ public class SetlistOneMain {
         boolean hasChange = !StringUtils.isBlank(diff);
         if (hasChange) {
             writeStringToFile(setlistText, setlistFile);
-            boolean newDate = uploadLatest(setlistText);
-            if (newDate || !readStringFromFile(lastSongFile).equals(
-                    lastSong)) {
+            // -1 if failure or not a new setlist
+            // 0 if a new setlist (latest)
+            // 1 if there is a newer date available already
+            int newDate = uploadLatest(setlistText);
+            if (newDate == 0 || (newDate == -1 &&
+            		!readStringFromFile(lastSongFile).equals(lastSong))) {
                 postNotification(getPushJsonString(lastSong, setlistText,
                         getExpireDateString()));
                 writeStringToFile(lastSong, lastSongFile);
             }
             else if (readStringFromFile(lastSongFile).equals(lastSong)) {
-            	// TODO Push setlist anyhow, but no notification?
+            	postNotification(getPushJsonString("", setlistText,
+                        getExpireDateString()));
             }
         }
+        */
     }
     
     private static void archiveSetlists() {
@@ -163,7 +175,7 @@ public class SetlistOneMain {
             return;
         // https://whsec1.davematthewsband.com/backstage.asp?Month=7&year=2009&ShowID=1286649
         // https://whsec1.davematthewsband.com/backstage.asp?Month=9&year=2012&ShowID=1287166
-        for (int i = 1991; i < 2014; i++) {
+        for (int i = 1991; i < 1992; i++) {
             HttpGet getMethod = new HttpGet(
                     "https://whsec1.davematthewsband.com/backstage.asp?year=" + i);
             StringBuilder sb = new StringBuilder();
@@ -210,11 +222,15 @@ public class SetlistOneMain {
                     doc = Jsoup.parse(html);
                     char badChar = 65533;
                     char apos = 39;
+                    char endChar = 160;
                     StringBuilder locString = new StringBuilder();
+                    String dateString = null;
                     StringBuilder setString = new StringBuilder();
                     int numTicketings = 0;
                     boolean br = false;
                     boolean b = false;
+                    int slot = 0;
+                    String setlistId = null;
                     sb.setLength(0);
                     if (doc != null) {
                         body = doc.body();
@@ -223,23 +239,55 @@ public class SetlistOneMain {
                         for (Element ticketing : ticketings) {
                             for (Element single : ticketing.getAllElements()) {
                                 if (single.tagName().equals("span")) {
+                                	if (locString.length() > 0) {
+                                		dateString = getSetlistDateString(locString.toString());
+                                		setlistId = createLatest(dateString);
+                                	}
                                     for (Node node : single.childNodes()) {
                                         if (!(node instanceof Comment)) {
-                                            if (node instanceof TextNode)
-                                                sb.append(((TextNode) node).text());
-                                            else {
+                                            if (node instanceof TextNode) {
+                                                sb.append(StringUtils.remove(((TextNode) node).text(), endChar));
+                                            } else {
                                                 if (node.nodeName().equals("div")) {
                                                     // End current string
                                                     if (setString.length() > 0)
                                                         setString.append("\n");
+                                                    if (StringUtils.replaceChars(
+                                                            StringUtils.strip(
+                                                                    sb.toString()),
+                                                                    badChar, apos)
+                                                            .startsWith("Encore") && !hasEncore) {
+                                                        hasEncore = true;
+                                                        if (!firstBreak) {
+                                                            setString.append("\n");
+                                                            firstBreak = true;
+                                                        }
+                                                        if (sb.indexOf(":") == -1) {
+                                                        	sb.setLength(0);
+                                                        	sb.append("Encore:");
+                                                        }
+                                                    }
+                                                    else {
+                                                    	uploadSong(StringUtils.replaceChars(
+                                            					StringUtils.strip(
+                                                                    sb.toString()),
+                                                                    badChar, apos), ++slot, setlistId);
+                                                    }
                                                     setString.append(
                                                         StringUtils.replaceChars(
-                                                            StringUtils.normalizeSpace(
+                                                            StringUtils.strip(
                                                                     sb.toString()),
                                                                     badChar, apos));
+                                                    setString.trimToSize();
                                                     sb.setLength(0);
                                                 }
                                                 else if (node.nodeName().equals("br")) {
+                                                    /*
+                                                    if (!hasBreak && hasEncore) {
+                                                        setString.append("\n");
+                                                        hasBreak = true;
+                                                    }
+                                                    */
                                                     if (sb.length() > 0 &&
                                                             !StringUtils.isBlank(
                                                                     sb.toString())) {
@@ -247,38 +295,64 @@ public class SetlistOneMain {
                                                             setString.append("\n");
                                                         setString.append(
                                                             StringUtils.replaceChars(
-                                                            StringUtils.normalizeSpace(
-                                                                sb.toString()), badChar,
-                                                                apos));
+                                                                StringUtils.strip(
+                                                                        sb.toString()),
+                                                                        badChar, apos));
+                                                        setString.trimToSize();
                                                         sb.setLength(0);
+                                                    }
+                                                    if (firstBreak && !secondBreak && hasEncore) {
+                                                        setString.append("\n");
+                                                        secondBreak = true;
+                                                    }
+                                                    if (!firstBreak) {
+                                                        setString.append("\n");
+                                                        firstBreak = true;
                                                     }
                                                 }
                                                 else if (node.nodeName().equals("img")) {
                                                     sb.append("->");
+                                                    hasSegue = true;
+                                                    if (!hasGuests) {
+                                                        lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                                StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                                    }
                                                 }
                                                 else if (node instanceof Element) {
                                                     sb.append(((Element) node).text());
                                                     if (!StringUtils.replaceChars(
-                                                            StringUtils.normalizeSpace(
+                                                            StringUtils.strip(
+                                                                    sb.toString()),
+                                                                    badChar, apos)
+                                                            .equals("Encore:") && !hasGuests) {
+                                                        hasGuests = true;
+                                                        lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                                StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                                    }
+                                                    else if (StringUtils.replaceChars(
+                                                            StringUtils.strip(
                                                                     sb.toString()),
                                                                     badChar, apos)
                                                             .equals("Encore:")) {
-                                                        lastSong = setString.substring(
-                                                            setString.lastIndexOf("\n")+1);
+                                                        hasEncore = true;
+                                                        lastSong = StringUtils.strip(sb.toString());
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    if (sb.length() > 0) {
-                                        if (setString.length() > 0)
-                                            setString.append("\n");
-                                        setString.append(StringUtils.replaceChars(
-                                                StringUtils.normalizeSpace(
-                                                        sb.toString()), badChar, apos));
+                                    if (!hasSegue && !hasGuests) {
+                                        lastSong = StringUtils.strip(setString.toString()).substring(
+                                                StringUtils.strip(setString.toString()).lastIndexOf("\n")+1);
                                     }
-                                    System.out.println(locString.toString());
-                                    System.out.println(setString.toString());
+                                    if (setString.length() > 0)
+                                        setString.append("\n");
+                                    setString.append(
+                                        StringUtils.replaceChars(
+                                            StringUtils.strip(
+                                                    sb.toString()),
+                                                    badChar, apos));
+                                    setString.trimToSize();
                                 }
                                 else if (setString.length() == 0) {
                                     if (single.id().equals("ticketingColText"))
@@ -357,6 +431,8 @@ public class SetlistOneMain {
         HttpGet getMethod = new HttpGet(url);
         StringBuilder sb = new StringBuilder();
         String html = null;
+        if (!url.startsWith("https"))
+        	client = new DefaultHttpClient();
         try {
             response = client.execute(getMethod);
             html = EntityUtils.toString(response.getEntity(), "UTF-8");
@@ -395,7 +471,6 @@ public class SetlistOneMain {
                                         // End current string
                                         if (setString.length() > 0)
                                             setString.append("\n");
-                                        // TODO Test this change
                                         if (StringUtils.replaceChars(
                                                 StringUtils.strip(
                                                         sb.toString()),
@@ -405,6 +480,10 @@ public class SetlistOneMain {
                                             if (!firstBreak) {
                                                 setString.append("\n");
                                                 firstBreak = true;
+                                            }
+                                            if (sb.indexOf(":") == -1) {
+                                            	sb.setLength(0);
+                                            	sb.append("Encore:");
                                             }
                                         }
                                         setString.append(
@@ -578,9 +657,10 @@ public class SetlistOneMain {
         return responseString;
     }
     
-    private static boolean postSetlist(String json) {
+    private static String postSetlist(String json) {
         DefaultHttpClient httpclient = new DefaultHttpClient();
         HttpResponse response = null;
+        String objectId = null;
         HttpPost httpPost = new HttpPost("https://api.parse.com/1/classes/Setlist");
         httpPost.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
         httpPost.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
@@ -592,8 +672,14 @@ public class SetlistOneMain {
             if (response.getStatusLine().getStatusCode() != 201) {
                 System.out.println("POST of setlist failed!");
                 System.out.println(json);
-                return false;
             } 
+            else {
+            	HttpEntity entity = response.getEntity();
+	            if (entity != null) {
+	                 String responseString = EntityUtils.toString(response.getEntity());
+	                 objectId = getSimpleObjectIdFromResponse(responseString);
+	            }
+            }
         } catch (UnsupportedEncodingException e) {
             System.out.println("Failed to create entity from " + json);
             e.printStackTrace();
@@ -606,7 +692,7 @@ public class SetlistOneMain {
                     httpPost.getURI().toASCIIString());
             e1.printStackTrace();
         }
-        return true;
+        return objectId;
     }
     
     private static boolean putSetlist(String objectId, String json) {
@@ -640,6 +726,119 @@ public class SetlistOneMain {
         return true;
     }
     
+    private static boolean addPlay(String setlistId, String playId) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        HttpPut httpPut = new HttpPut("https://api.parse.com/1/classes/Setlist/" + setlistId);
+        httpPut.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPut.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPut.addHeader("Content-Type", "application/json; charset=utf-8");
+        String json = null;
+        try {
+        	json = getAddPlayJsonString(playId);
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPut.setEntity(reqEntity);
+            response = httpclient.execute(httpPut);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("Add play " + playId + " to " + setlistId + " failed!");
+                System.out.println(json);
+                return false;
+            }  
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return true;
+    }
+    
+    private static String getSong(String latestSong) {
+    	if (latestSong == null)
+    		return null;
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpEntity entity = null;
+        HttpResponse response = null;
+        String responseString = null;
+        String url = "https://api.parse.com/1/classes/Song?";
+        try {
+            url += URLEncoder.encode("where={\"title\":\"" + latestSong + "\"}", "US-ASCII");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        HttpGet httpGet = new HttpGet(url);
+        httpGet.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpGet.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        try {
+            response = httpclient.execute(httpGet);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("GET of " + latestSong + " failed!");
+                return null;
+            }
+            entity = response.getEntity();
+            if (entity != null)
+                 responseString = EntityUtils.toString(response.getEntity());  
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return responseString;
+    }
+    
+    private static boolean getPlay(String setlistId, Integer slot) {
+    	if (setlistId == null)
+    		return true;
+    	// Check if this setlist has this many slots already
+    	// Get relations (plays) to this setlist
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpEntity entity = null;
+        HttpResponse response = null;
+        String responseString = null;
+        String url = "https://api.parse.com/1/classes/Play?";
+        try {
+        	url += URLEncoder.encode("where={\"$relatedTo\":{\"object\":{\"__type\":\"Pointer\",\"className\":\"Setlist\",\"objectId\":\"" + setlistId + "\"},\"key\":\"plays\"}}", "US-ASCII");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        HttpGet httpGet = new HttpGet(url);
+        httpGet.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpGet.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        try {
+            response = httpclient.execute(httpGet);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("GET of " + setlistId + " : " + slot + " play failed!");
+                return true;
+            }
+            entity = response.getEntity();
+            if (entity != null) {
+                 responseString = EntityUtils.toString(response.getEntity());
+                 int tempSlot = getLargestSlotFromResponse(responseString);
+                 if (slot > tempSlot)
+                	 return false;
+            }
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return true;
+    }
+    
     private static boolean postNotification(String json) {
         DefaultHttpClient httpclient = new DefaultHttpClient();
         HttpResponse response = null;
@@ -655,7 +854,7 @@ public class SetlistOneMain {
                 System.out.println("POST of notification failed!");
                 System.out.println(json);
                 return false;
-            } 
+            }
         } catch (UnsupportedEncodingException e) {
             System.out.println("Failed to create entity from " + json);
             e.printStackTrace();
@@ -666,6 +865,176 @@ public class SetlistOneMain {
         } catch (IOException e1) {
             System.out.println("Failed to get setlist from " +
                     httpPost.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return true;
+    }
+    
+    private static String postSong(String json) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        String objectId = null;
+        HttpPost httpPost = new HttpPost("https://api.parse.com/1/classes/Song");
+        httpPost.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPost.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPost.addHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPost.setEntity(reqEntity);
+            response = httpclient.execute(httpPost);
+            if (response.getStatusLine().getStatusCode() != 201) {
+                System.out.println("POST of song failed!");
+                System.out.println(json);
+            }
+            else {
+            	HttpEntity entity = response.getEntity();
+	            if (entity != null) {
+	                 String responseString = EntityUtils.toString(response.getEntity());
+	                 objectId = getSimpleObjectIdFromResponse(responseString);
+	            }
+            }
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPost.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPost.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return objectId;
+    }
+    
+    private static boolean putSong(String objectId, String json) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        System.out.println(objectId);
+        HttpPut httpPut = new HttpPut("https://api.parse.com/1/classes/Song/" + objectId);
+        httpPut.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPut.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPut.addHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPut.setEntity(reqEntity);
+            response = httpclient.execute(httpPut);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("PUT to " + objectId + " failed!");
+                System.out.println(json);
+                return false;
+            }  
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return true;
+    }
+    
+    private static String postPlay(String json) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        String objectId = null;
+        HttpPost httpPost = new HttpPost("https://api.parse.com/1/classes/Play");
+        httpPost.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPost.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPost.addHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPost.setEntity(reqEntity);
+            response = httpclient.execute(httpPost);
+            if (response.getStatusLine().getStatusCode() != 201) {
+                System.out.println("POST of song failed!");
+                System.out.println(json);
+            }
+            else {
+            	HttpEntity entity = response.getEntity();
+	            if (entity != null) {
+	                 String responseString = EntityUtils.toString(response.getEntity());
+	                 objectId = getSimpleObjectIdFromCreate(responseString);
+	            }
+            }
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPost.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPost.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return objectId;
+    }
+    
+    private static boolean putPlay(String objectId, String json) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        HttpPut httpPut = new HttpPut("https://api.parse.com/1/classes/Play/" + objectId);
+        httpPut.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPut.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPut.addHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPut.setEntity(reqEntity);
+            response = httpclient.execute(httpPut);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("PUT to " + objectId + " failed!");
+                System.out.println(json);
+                return false;
+            }  
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        return true;
+    }
+    
+    private static boolean putSetSong(String objectId, String json) {
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpResponse response = null;
+        HttpPut httpPut = new HttpPut("https://api.parse.com/1/classes/Song/" + objectId);
+        httpPut.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpPut.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        httpPut.addHeader("Content-Type", "application/json; charset=utf-8");
+        try {
+            StringEntity reqEntity = new StringEntity(json, "UTF-8");
+            httpPut.setEntity(reqEntity);
+            response = httpclient.execute(httpPut);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("PUT to " + objectId + " failed!");
+                System.out.println(json);
+                return false;
+            }  
+        } catch (UnsupportedEncodingException e) {
+            System.out.println("Failed to create entity from " + json);
+            e.printStackTrace();
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpPut.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpPut.getURI().toASCIIString());
             e1.printStackTrace();
         }
         return true;
@@ -685,6 +1054,16 @@ public class SetlistOneMain {
         return rootNode.toString();
     }
     
+    private static String getNewSetlistJsonString(String dateString) {
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        ObjectNode rootNode = factory.objectNode();
+        ObjectNode dateNode = factory.objectNode();
+        dateNode.put("__type", "Date");
+        dateNode.put("iso", dateString);
+        rootNode.put("setDate", dateNode);
+        return rootNode.toString();
+    }
+    
     private static String getPushJsonString(String latestSong, String setlist,
             String expireDateString) {
         JsonNodeFactory factory = JsonNodeFactory.instance;
@@ -700,6 +1079,69 @@ public class SetlistOneMain {
         rootNode.put("where", whereNode);
         rootNode.put("expiration_time", expireDateString);
         rootNode.put("data", dataNode);
+        return rootNode.toString();
+    }
+    
+    private static String getSongJsonString(String latestSong) {
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        ObjectNode rootNode = factory.objectNode();
+        rootNode.put("title", latestSong);
+        return rootNode.toString();
+    }
+    /*
+     {
+	  "__type": "Pointer",
+	  "className": "GameScore",
+	  "objectId": "Ed1nuqPvc"
+	}
+     */
+    private static String getPlayJsonString(String showId, Integer slot, String songId) {
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        ObjectNode rootNode = factory.objectNode();
+        ObjectNode showNode = factory.objectNode();
+        ObjectNode songNode = factory.objectNode();
+        showNode.put("__type", "Pointer");
+        showNode.put("className", "Setlist");
+        showNode.put("objectId", showId);
+        songNode.put("__type", "Pointer");
+        songNode.put("className", "Song");
+        songNode.put("objectId", songId);
+        rootNode.put("show", showNode);
+        rootNode.put("slot", slot);
+        rootNode.put("song", songNode);
+        return rootNode.toString();
+    }
+    
+    private static String getAddPlayJsonString(String playId) {
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        ObjectNode rootNode = factory.objectNode();
+        ObjectNode playNode = factory.objectNode();
+        ArrayNode playArray = factory.arrayNode();
+        ObjectNode playsNode = factory.objectNode();
+        playNode.put("__type", "Pointer");
+        playNode.put("className", "Play");
+        playNode.put("objectId", playId);
+        playArray.add(playNode);
+        playsNode.put("__op", "AddRelation");
+        playsNode.put("objects", playArray);
+        rootNode.put("plays", playsNode);
+        return rootNode.toString();
+    }
+    
+    private static String getSetSongJsonString(String playId) {
+        JsonNodeFactory factory = JsonNodeFactory.instance;
+        ObjectNode rootNode = factory.objectNode();
+        ObjectNode addRelationNode = factory.objectNode();
+        ArrayNode relationArray = factory.arrayNode();
+        ObjectNode relationNode = factory.objectNode();
+        // {"setlist":{"__op":"AddRelation","objects":[{"__type":"Pointer","className":"Song","objectId":"Vx4nudeWn"}]}}
+        relationNode.put("__type", "Pointer");
+        relationNode.put("className", "Play");
+        relationNode.put("objectId", playId);
+        relationArray.add(relationNode);
+        addRelationNode.put("__op", "AddRelation");
+        addRelationNode.put("objects", relationArray);
+        rootNode.put("setlist", addRelationNode);
         return rootNode.toString();
     }
     
@@ -729,8 +1171,11 @@ public class SetlistOneMain {
                         jp.nextToken();
                         jp.getText(); // date string
                     }
+                    else if ("title".equals(fieldname)) {
+                    	jp.nextToken();
+                    	jp.getText(); // song title
+                    }
                     else if ("objectId".equals(fieldname)) {
-                        jp.nextToken();
                         objectId = jp.getText();
                     }
                 }
@@ -746,22 +1191,220 @@ public class SetlistOneMain {
         return objectId;
     }
     
-    private static boolean uploadLatest(String latestSetlist) {
+    private static String getSimpleObjectIdFromResponse(String responseString) {
+        JsonFactory f = new JsonFactory();
+        JsonParser jp;
+        String fieldname;
+        String objectId = null;
+        try {
+            jp = f.createJsonParser(responseString);
+            jp.nextToken();
+            jp.nextToken();
+            fieldname = jp.getCurrentName();
+            if ("results".equals(fieldname)) { // contains an object
+                jp.nextToken();
+                while (jp.nextToken() != null) {
+                    jp.nextToken();
+                    fieldname = jp.getCurrentName();
+                    if ("objectId".equals(fieldname)) {
+                    	jp.nextToken();
+                        objectId = jp.getText();
+                        jp.close();
+                        return objectId;
+                    }
+                }
+            }
+            jp.close(); // ensure resources get cleaned up timely and properly
+        } catch (JsonParseException e) {
+            System.out.println("Failed to parse " + responseString);
+            e.printStackTrace();
+        } catch (IOException e) {
+            System.out.println("Failed to parse " + responseString);
+            e.printStackTrace();
+        }
+        return objectId;
+    }
+    
+    private static String getSimpleObjectIdFromCreate(String createString) {
+        JsonFactory f = new JsonFactory();
+        JsonParser jp;
+        String fieldname;
+        String objectId = null;
+        try {
+            jp = f.createJsonParser(createString);
+            while (jp.nextToken() != null) {
+                fieldname = jp.getCurrentName();
+                if ("objectId".equals(fieldname)) {
+                	jp.nextToken();
+                    objectId = jp.getText();
+                    jp.close();
+                    return objectId;
+                }
+            }
+            jp.close(); // ensure resources get cleaned up timely and properly
+        } catch (JsonParseException e) {
+            System.out.println("Failed to parse " + createString);
+            e.printStackTrace();
+        } catch (IOException e) {
+            System.out.println("Failed to parse " + createString);
+            e.printStackTrace();
+        }
+        return objectId;
+    }
+    
+    private static int getLargestSlotFromResponse(String responseString) {
+        JsonFactory f = new JsonFactory();
+        JsonParser jp;
+        String fieldname;
+        int slot = -1;
+        int tempSlot = -1;
+        try {
+            jp = f.createJsonParser(responseString);
+            jp.nextToken();
+            jp.nextToken();
+            fieldname = jp.getCurrentName();
+            if ("results".equals(fieldname)) { // contains an object
+                jp.nextToken();
+                while (jp.nextToken() != null) {
+                    jp.nextToken();
+                    fieldname = jp.getCurrentName();
+                    if ("slot".equals(fieldname)) {
+                        tempSlot = jp.getIntValue();
+                        slot = tempSlot > slot ? slot : tempSlot;
+                    }
+                }
+            }
+            jp.close(); // ensure resources get cleaned up timely and properly
+        } catch (JsonParseException e) {
+            System.out.println("Failed to parse " + responseString);
+            e.printStackTrace();
+        } catch (IOException e) {
+            System.out.println("Failed to parse " + responseString);
+            e.printStackTrace();
+        }
+        return slot;
+    }
+    
+    private static int uploadLatest(String latestSetlist) {
         String getResponse = getSetlist(latestSetlist);
         if (getResponse == null) {
             System.out.println("Fetch setlist from Parse failed!");
             System.out.println(latestSetlist);
-            return false;
+            return -1;
         }
         String objectId = getObjectIdFromResponse(getResponse);
         if (objectId == null) {
             postSetlist(getSetlistJsonString(latestSetlist));
-            return true;
+            File dir = new File("/home/");
+            String[] files = dir.list(new FilenameFilter() {
+            	public boolean accept(File dir, String filename) {
+            		return filename.endsWith(".txt");
+        		}
+        	});
+            String dateString = getSetlistDateString(latestSetlist);
+            Date newDate = getDateFromString(dateString);
+            for (int i = 0; i < files.length; i++) {
+            	if (files[i].startsWith("setlist")) {
+            		if (getDateFromString(files[i].substring(7)).after(newDate)) {
+            			System.out.println("older setlist file found!");
+            			return 1;
+            		}
+            	}
+            }
+            return 0;
         }
         else {
             putSetlist(objectId, getSetlistJsonString(latestSetlist));
+            return -1;
+        }
+    }
+    
+    private static String createLatest(String dateString) {
+    	if (dateString == null)
+            return null;
+        DefaultHttpClient httpclient = new DefaultHttpClient();
+        HttpEntity entity = null;
+        HttpResponse response = null;
+        String responseString = null;
+        String url = "https://api.parse.com/1/classes/Setlist?";
+        try {
+            url += URLEncoder.encode("where={\"setDate\":{\"__type\":\"Date\",\"iso\":\"" + dateString + "\"}}", "US-ASCII");
+        } catch (UnsupportedEncodingException e) {
+            e.printStackTrace();
+        }
+        HttpGet httpGet = new HttpGet(url);
+        httpGet.addHeader("X-Parse-Application-Id", "ImI8mt1EM3NhZNRqYZOyQpNSwlfsswW73mHsZV3R");
+        httpGet.addHeader("X-Parse-REST-API-Key", "1smRSlfAvbFg4AsDxat1yZ3xknHQbyhzZ4msAi5w");
+        try {
+            response = httpclient.execute(httpGet);
+            if (response.getStatusLine().getStatusCode() != 200) {
+                System.out.println("GET of " + dateString + " failed!");
+                return null;
+            }
+            entity = response.getEntity();
+            if (entity != null)
+                 responseString = EntityUtils.toString(response.getEntity());  
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    httpGet.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        if (responseString == null) {
+            System.out.println("Fetch setlist from Parse failed!");
+            System.out.println(dateString);
+        }
+        String objectId = getObjectIdFromResponse(responseString);
+        if (objectId == null)
+            objectId = postSetlist(getNewSetlistJsonString(dateString));
+        return objectId;
+    }
+    
+    private static Date getDateFromString(String dateString) {
+    	SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+        Date date = null;
+        try {
+            date = dateFormat.parse(dateString);
+        } catch (ParseException e) {
+            System.out.println("Failed to parse date from " + dateString);
+            e.printStackTrace();
+        }
+        return date;
+    }
+    
+    private static boolean uploadPlay(String songId, Integer slot, String setlistId) {
+    	// Check if set has this many plays
+        boolean hasPlay = getPlay(setlistId, slot);
+        if (!hasPlay) {
+            String playId = postPlay(getPlayJsonString(setlistId, slot, songId));
+            addPlay(setlistId, playId);
+            return true;
+        }
+        return false;
+    }
+    
+    private static boolean uploadSong(String latestSong, Integer slot, String setlistId) {
+    	// Check if song exists
+        String getResponse = getSong(latestSong);
+        if (getResponse == null) {
+            System.out.println("Fetch setlist from Parse failed!");
+            System.out.println(latestSong);
             return false;
         }
+        // Get the song id
+        String objectId = getSimpleObjectIdFromResponse(getResponse);
+        if (objectId == null) {
+        	// Song doesn't exist, so add song and get new objectId
+            objectId = postSong(getSongJsonString(latestSong));
+            if (objectId == null)
+            	return false;
+        }
+    	// Song exists, add play
+        uploadPlay(objectId, slot, setlistId);
+        return true;
     }
     
     private static void writeBufferToFile(byte[] buffer, String filename) {
