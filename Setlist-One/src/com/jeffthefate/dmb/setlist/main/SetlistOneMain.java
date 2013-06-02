@@ -8,14 +8,24 @@
  */
 package com.jeffthefate.dmb.setlist.main;
 
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontFormatException;
+import java.awt.FontMetrics;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FilenameFilter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
@@ -26,10 +36,15 @@ import java.nio.charset.CharsetDecoder;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
+import java.util.Map.Entry;
 import java.util.TimeZone;
+import java.util.TreeMap;
+
+import javax.imageio.ImageIO;
 
 import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -60,6 +75,15 @@ import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
 
+import twitter4j.Status;
+import twitter4j.StatusUpdate;
+import twitter4j.Twitter;
+import twitter4j.TwitterException;
+import twitter4j.TwitterFactory;
+import twitter4j.auth.AccessToken;
+import twitter4j.auth.RequestToken;
+import twitter4j.conf.ConfigurationBuilder;
+
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.core.JsonParser;
@@ -69,8 +93,15 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 
 public class SetlistOneMain {
     
-    private static final String SETLIST_FILENAME = "/home/setlist";
-    private static final String LAST_SONG_FILENAME = "/home/last_song";
+	private static final String SETLIST_DIR = "/home/SETLISTS/";
+    private static final String SETLIST_FILENAME = SETLIST_DIR + "setlist";
+	private static final String LAST_SONG_DIR = "/home/LAST_SONGS/";
+    private static final String LAST_SONG_FILENAME = LAST_SONG_DIR + "last_song";
+    //private static final String SETLIST_JPG_FILENAME = "C:\\Users\\Jeff\\git\\SetlistOne\\Setlist-One\\build\\setlist.jpg";
+    private static final String SETLIST_JPG_FILENAME = "/home/setlist.jpg";
+    //private static final String ROBOTO_FONT_FILENAME = "C:\\Users\\Jeff\\git\\SetlistOne\\Setlist-One\\build\\roboto.ttf";
+    private static final String ROBOTO_FONT_FILENAME = "/home/roboto.ttf";
+    private static final String DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
     private static String lastSong = "";
     private static boolean hasEncore = false;
     private static boolean hasGuests = false;
@@ -85,8 +116,94 @@ public class SetlistOneMain {
         cal.setTimeInMillis(System.currentTimeMillis());
         System.out.println(cal.getTime().toString());
         System.out.println(Charset.defaultCharset().displayName());
-        archiveSetlists();
+        if (args.length > 0)
+        	liveSetlist(args[0]);
+        else	
+        	liveSetlist("https://whsec1.davematthewsband.com/backstage.asp");
+        currDateString = getNewSetlistDateString(locList.get(0));
+        StringBuilder sb = new StringBuilder();
+        if (locList.size() < 4)
+        	locList.add(1, "Dave Matthews Band");
+        for (String loc : locList) {
+        	sb.append(loc);
+        	sb.append("\n");
+        }
+        sb.append("\n");
+        for (String set : setList) {
+        	if (set.toLowerCase().equals("encore:"))
+        		sb.append("\n");
+        	sb.append(set);
+        	sb.append("\n");
+        }
+        if (!noteList.isEmpty()) {
+        	sb.append("\n");
+        	for (String note : noteList) {
+            	sb.append(note);
+            	sb.append("\n");
+        	}
+        }
+        String setlistText = sb.toString();
+        // createScreenshot(setlistText);
+        System.out.print(setlistText);
+        String setlistFile = SETLIST_FILENAME +
+                (currDateString.replace('/', '_')) + ".txt";
+        String lastSongFile = LAST_SONG_FILENAME +
+                (currDateString.replace('/', '_')) + ".txt";
+        String lastSetlist = readStringFromFile(setlistFile);
+        System.out.println("lastSetlist:");
+        System.out.println(lastSetlist);
+        String diff = StringUtils.difference(lastSetlist, setlistText);
+        System.out.println("diff:");
+        System.out.println(diff);
+        boolean hasChange = !StringUtils.isBlank(diff);
+        sb.setLength(0);
+        if (hasChange) {
+            writeStringToFile(setlistText, setlistFile);
+            // -1 if failure or not a new setlist
+            // 0 if a new setlist (latest)
+            // 1 if there is a newer date available already
+            int newDate = uploadLatest(setlistText);
+            if (getLatestDate().after(convertStringToDate(DATE_FORMAT,
+            		currDateString)))
+            	return;
+            String lastSongFromFile = readStringFromFile(lastSongFile);
+            if (newDate == 0 || (newDate == -1 &&
+            		!lastSongFromFile.equals(lastSong))) {
+            	if (!stripSpecialCharacters(lastSongFromFile).equals(
+            			stripSpecialCharacters(lastSong))) {
+            		System.out.println("POST NOTIFICATION AND TWEET: " + lastSong);
+	                postNotification(getPushJsonString(lastSong, setlistText,
+	                        getExpireDateString()));
+	                sb.append("Current song: [");
+	                sb.append(lastSong);
+	                sb.append("]");
+	                postTweet(sb.toString(), new File(createScreenshot(setlistText)));
+            	}
+            	else {
+            		System.out.println("POST NOTIFICATION: BLANK");
+            		postNotification(getPushJsonString("", setlistText,
+                            getExpireDateString()));
+            	}
+                writeStringToFile(lastSong, lastSongFile);
+            }
+            else if (readStringFromFile(lastSongFile).equals(lastSong)) {
+            	System.out.println("POST NOTIFICATION: BLANK");
+            	postNotification(getPushJsonString("", setlistText,
+                        getExpireDateString()));
+            }
+        }
         /*
+        sb.setLength(0);
+        sb.append("Current song: [");
+        sb.append("Testing");
+        sb.append("] Get live updates on your Android: https://play.google.com/store/apps/details?id=com.jeffthefate.dmbquiz");
+        authTweet(sb.toString(), new File(createScreenshot(readStringFromFile("/home/setlist2013-05-26T00:00:00.000Z.txt"))));
+        if (args.length > 0)
+        	newSetlist(args[0]);
+        else	
+        	newSetlist("https://whsec1.davematthewsband.com/backstage.asp?Month=5&year=2013&ShowID=1287526");
+        	//newSetlist("https://whsec1.davematthewsband.com/backstage.asp?Month=5&year=2013&ShowID=1287462");
+        //archiveSetlists();
         String setlistText;
         if (args.length > 0)
         	setlistText = latestSetlist(args[0]);
@@ -106,6 +223,7 @@ public class SetlistOneMain {
         System.out.println("diff:");
         System.out.println(diff);
         boolean hasChange = !StringUtils.isBlank(diff);
+        StringBuilder sb = new StringBuilder();
         if (hasChange) {
             writeStringToFile(setlistText, setlistFile);
             // -1 if failure or not a new setlist
@@ -117,13 +235,60 @@ public class SetlistOneMain {
                 postNotification(getPushJsonString(lastSong, setlistText,
                         getExpireDateString()));
                 writeStringToFile(lastSong, lastSongFile);
+                sb.append("Current song: [");
+                sb.append(lastSong);
+                sb.append("] Get live updates on your Android: https://play.google.com/store/apps/details?id=com.jeffthefate.dmbquiz");
+                authTweet(sb.toString(), new File(createScreenshot(setlistText)));
             }
             else if (readStringFromFile(lastSongFile).equals(lastSong)) {
             	postNotification(getPushJsonString("", setlistText,
                         getExpireDateString()));
             }
         }
+        StringBuilder sb = new StringBuilder();
+        sb.append("Current song: [");
+        sb.append("Testing");
+        sb.append("] Get live updates on your Android: https://play.google.com/store/apps/details?id=com.jeffthefate.dmbquiz");
+        authTweet(sb.toString(), new File(createScreenshot(readStringFromFile("/home/setlist2013-05-26T00:00:00.000Z.txt"))));
         */
+    }
+    
+    private static String stripSpecialCharacters(String song) {
+    	song = StringUtils.remove(song, "*");
+    	song = StringUtils.remove(song, "+");
+    	song = StringUtils.remove(song, "~");
+    	song = StringUtils.remove(song, "�");
+    	song = StringUtils.trim(song);
+    	return song;
+    }
+    
+    private static Date getLatestDate() {
+    	File file = new File(SETLIST_DIR);
+    	String[] files = file.list();
+    	Date latest = null;
+        Date date = null;
+        String curr = "";
+        String dateString = "";
+    	for (int i = 0; i < files.length; i++) {
+    		curr = files[i];
+    		dateString = curr.substring("setlist".length(), curr.indexOf(".txt"));
+    		date = convertStringToDate(DATE_FORMAT, dateString);
+    		if (latest == null || date.after(latest))
+    			latest = date;
+    	}
+    	return latest;
+    }
+    
+    private static Date convertStringToDate(String format, String dateString) {
+    	SimpleDateFormat dateFormat = new SimpleDateFormat(format);
+    	Date date = null;
+    	try {
+            date = dateFormat.parse(dateString);
+        } catch (ParseException e2) {
+            System.out.println("Failed to parse date from " + dateString);
+            e2.printStackTrace();
+        }
+    	return date;
     }
     
     private static void archiveSetlists() {
@@ -248,7 +413,7 @@ public class SetlistOneMain {
                             for (Element single : ticketing.getAllElements()) {
                                 if (single.tagName().equals("span")) {
                                 	if (locString.length() > 0) {
-                                		dateString = getSetlistDateString(locString.toString());
+                                		dateString = getNewSetlistDateString(locString.toString());
                                 		setlistId = createLatest(dateString);
                                 	}
                                     for (Node node : single.childNodes()) {
@@ -627,6 +792,828 @@ public class SetlistOneMain {
         return locString.append("\n").append(setString).toString();
     }
     
+    private static String newSetlist(String url) {
+        SchemeRegistry schemeRegistry = new SchemeRegistry();
+        schemeRegistry.register(
+                new Scheme("https", 443, SSLSocketFactory.getSocketFactory()));
+
+        HttpParams params = new BasicHttpParams();
+
+        PoolingClientConnectionManager mgr = new PoolingClientConnectionManager(
+                schemeRegistry);
+
+        HttpClient client = new DefaultHttpClient(mgr, params);
+        HttpPost postMethod = new HttpPost(
+                "https://whsec1.davematthewsband.com/login.asp");
+        postMethod.addHeader("Accept",
+                "text/html, application/xhtml+xml, */*");
+        postMethod.addHeader("Referer",
+                "https://whsec1.davematthewsband.com/login.asp");
+        postMethod.addHeader("Accept-Language", "en-US");
+        postMethod.addHeader("User-Agent",
+                "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)");
+        postMethod.addHeader("Content-Type",
+                "application/x-www-form-urlencoded");
+        postMethod.addHeader("Accept-Encoding", "gzip, deflate");
+        postMethod.addHeader("Host", "whsec1.davematthewsband.com");
+        postMethod.addHeader("Connection", "Keep-Alive");
+        postMethod.addHeader("Cache-Control", "no-cache");
+        postMethod.addHeader("Cookie",
+                "MemberInfo=isInternational=&MemberID=&UsrCount=04723365306&ExpDate=&Username=; ASPSESSIONIDQQTDRTTC=PKEGDEFCJBLAIKFCLAHODBHN; __utma=10963442.556285711.1366154882.1366154882.1366154882.1; __utmb=10963442.2.10.1366154882; __utmc=10963442; __utmz=10963442.1366154882.1.1.utmcsr=warehouse.dmband.com|utmccn=(referral)|utmcmd=referral|utmcct=/; ASPSESSIONIDSSDRTSRA=HJBPPKFCJGEJKGNEMJJMAIPN");
+        
+        List<NameValuePair> nameValuePairs =
+                new ArrayList<NameValuePair>();
+        nameValuePairs.add(new BasicNameValuePair("the_url", ""));
+        nameValuePairs.add(new BasicNameValuePair("form_action", "login"));
+        nameValuePairs.add(new BasicNameValuePair("Username", "fateman"));
+        nameValuePairs.add(new BasicNameValuePair("Password", "nintendo"));
+        nameValuePairs.add(new BasicNameValuePair("x", "0"));
+        nameValuePairs.add(new BasicNameValuePair("y", "0"));
+        try {
+            postMethod.setEntity(new UrlEncodedFormEntity(nameValuePairs));
+        } catch (UnsupportedEncodingException e1) {}
+        HttpResponse response = null;
+        try {
+            response = client.execute(postMethod);
+        } catch (IOException e1) {}
+        if (response == null || (response.getStatusLine().getStatusCode() !=
+                200 && response.getStatusLine().getStatusCode() != 302))
+            return "Error";
+        HttpGet getMethod = new HttpGet(url);
+        StringBuilder sb = new StringBuilder();
+        String html = null;
+        if (!url.startsWith("https"))
+        	client = new DefaultHttpClient();
+        try {
+            response = client.execute(getMethod);
+            html = EntityUtils.toString(response.getEntity(), "UTF-8");
+            html = StringEscapeUtils.unescapeHtml4(html);
+        } catch (ClientProtocolException e1) {
+            System.out.println("Failed to connect to " +
+                    getMethod.getURI().toASCIIString());
+            e1.printStackTrace();
+        } catch (IOException e1) {
+            System.out.println("Failed to get setlist from " +
+                    getMethod.getURI().toASCIIString());
+            e1.printStackTrace();
+        }
+        Document doc = Jsoup.parse(html);
+        char badChar = 65533;
+        char apos = 39;
+        char endChar = 160;
+        StringBuilder locString = new StringBuilder();
+        String dateString = null;
+        StringBuilder setString = new StringBuilder();
+        int numTicketings = 0;
+        boolean br = false;
+        boolean b = false;
+        int slot = 0;
+        String setlistId = null;
+        String lastPlay = null;
+        boolean hasSetCloser = false;
+        hasEncore = false;
+        hasGuests = false;
+        hasSegue = false;
+        firstBreak = false;
+        secondBreak = false;
+        String divStyle = "";
+        String locStyle = "padding-bottom:12px;padding-left:3px;color:#3995aa;";
+        String setStyle = "font-family:sans-serif;font-size:14;font-weight:normal;margin-top:15px;margin-left:15px;";
+        sb.setLength(0);
+        if (doc != null) {
+            Element body = doc.body();
+            Elements divs = body.getElementsByTag("div");
+            for (Element div : divs) {
+            	if (div.hasAttr("style")) {
+            		divStyle = div.attr("style");
+            		if (divStyle.equals(locStyle))
+            			System.out.println("LOC: " + div.ownText());
+        			else if (divStyle.equals(setStyle)) {
+        				String divText = div.ownText();
+        				System.out.println("SET: " + divText);
+        				System.out.println("COUNT: " + StringUtils.countMatches(divText, String.valueOf(endChar)));
+        				String[] setAndNotes = divText.split(
+        						"(([\\s]*)[" + String.valueOf(endChar) + "]([\\s]*)){3}");
+        				for (int i = 0; i < setAndNotes.length; i++) {
+        					System.out.println(setAndNotes[i]);
+        				}
+        				sb.append(StringUtils.remove(divText, endChar));
+        				System.out.println("SET: " + sb.toString());
+        				String[] sections = sb.toString().split("-------- ENCORE --------");
+        				for (int i = 0; i < sections.length; i++) {
+        					System.out.println(sections[i]);
+        				}
+        				String[] songs = sections[0].split("\\d+[\\.]{1}");
+        				for (int i = 0; i < songs.length; i++) {
+        					System.out.println(songs[i]);
+        				}
+        			}
+            	}
+            }
+            /*
+            Elements ticketings = body.getElementsByAttributeValue("id",
+                    "ticketingColText");
+            for (Element ticketing : ticketings) {
+                for (Element single : ticketing.getAllElements()) {
+                    if (single.tagName().equals("span")) {
+                    	if (locString.length() > 0) {
+                    		dateString = getSetlistDateString(locString.toString());
+                    		setlistId = createLatest(dateString);
+                    	}
+                        for (Node node : single.childNodes()) {
+                            if (!(node instanceof Comment)) {
+                                if (node instanceof TextNode) {
+                                	System.out.println("TextNode is blank: " + StringUtils.isBlank(((TextNode) node).text()));
+                                	if (lastPlay != null && !StringUtils.isBlank(((TextNode) node).text())) {
+                                		uploadSong(lastPlay, ++slot, setlistId, slot == 1, false, false);
+                                		System.out.println("TextNode nulling lastPlay");
+                                		System.out.println("TextNode: '" + ((TextNode) node).text() + "'");
+                                		lastPlay = null;
+                                	}
+                                    sb.append(StringUtils.remove(((TextNode) node).text(), endChar));
+                                } else {
+                                    if (node.nodeName().equals("div")) {
+                                        // End current string
+                                        if (setString.length() > 0)
+                                            setString.append("\n");
+                                        if (StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .startsWith("Encore") && !hasEncore) {
+                                            hasEncore = true;
+                                            if (lastPlay != null && !hasSetCloser) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, true, false);
+                                            	hasSetCloser = true;
+                                            	System.out.println("div nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                            if (!firstBreak) {
+                                                setString.append("\n");
+                                                firstBreak = true;
+                                            }
+                                            if (sb.indexOf(":") == -1) {
+                                            	sb.setLength(0);
+                                            	sb.append("Encore:");
+                                            }
+                                        }
+                                        else {
+                                        	lastPlay = StringUtils.replaceChars(
+                                					StringUtils.strip(
+                                                            sb.toString()),
+                                                            badChar, apos);
+                                        }
+                                        setString.append(
+                                            StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos));
+                                        setString.trimToSize();
+                                        sb.setLength(0);
+                                    }
+                                    else if (node.nodeName().equals("br")) {
+                                        if (sb.length() > 0 &&
+                                                !StringUtils.isBlank(
+                                                        sb.toString())) {
+                                            if (setString.length() > 0)
+                                                setString.append("\n");
+                                            setString.append(
+                                                StringUtils.replaceChars(
+                                                    StringUtils.strip(
+                                                            sb.toString()),
+                                                            badChar, apos));
+                                            setString.trimToSize();
+                                            sb.setLength(0);
+                                        }
+                                        if (firstBreak && !secondBreak && hasEncore) {
+                                            setString.append("\n");
+                                            secondBreak = true;
+                                            if (lastPlay != null) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, false, true);
+                                            	System.out.println("br nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                        }
+                                        if (!firstBreak) {
+                                        	System.out.println("NOT firstBreak");
+                                        	System.out.println("lastPlay: " + lastPlay);
+                                        	System.out.println("hasSetCloser: " + hasSetCloser);
+                                            setString.append("\n");
+                                            firstBreak = true;
+                                            if (lastPlay != null && !hasSetCloser) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, true, false);
+                                            	hasSetCloser = true;
+                                            	System.out.println("!firstBreak nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                        }
+                                    }
+                                    else if (node.nodeName().equals("img")) {
+                                        sb.append("->");
+                                        hasSegue = true;
+                                        if (!hasGuests) {
+                                            lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                    StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                        }
+                                    }
+                                    else if (node instanceof Element) {
+                                        sb.append(((Element) node).text());
+                                        if (!StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .equals("Encore:") && !hasGuests) {
+                                            hasGuests = true;
+                                            lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                    StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                        }
+                                        else if (StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .equals("Encore:")) {
+                                            hasEncore = true;
+                                            lastSong = StringUtils.strip(sb.toString());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!hasSegue && !hasGuests) {
+                            lastSong = StringUtils.strip(setString.toString()).substring(
+                                    StringUtils.strip(setString.toString()).lastIndexOf("\n")+1);
+                        }
+                        if (setString.length() > 0)
+                            setString.append("\n");
+                        setString.append(
+                            StringUtils.replaceChars(
+                                StringUtils.strip(
+                                        sb.toString()),
+                                        badChar, apos));
+                        setString.trimToSize();
+                    }
+                    else if (setString.length() == 0) {
+                        if (single.id().equals("ticketingColText"))
+                            numTicketings++;
+                        if (numTicketings == 2 && single.nodeName().equals("div")) {
+                            locString.append(single.ownText());
+                            locString.append("\n");
+                        }
+                        if (single.tagName().equals("br"))
+                            br = true;
+                        else if (single.tagName().equals("b"))
+                            b = true;
+                        if (br && b) {
+                            locString.append(single.ownText());
+                            locString.append("\n");
+                            br = false;
+                            b = false;
+                        }
+                    }
+                }
+            }
+            */
+        }
+        System.out.println("lastSong: " + lastSong);
+        return locString.append("\n").append(setString).toString();
+    }
+    
+    private static ArrayList<String> locList = new ArrayList<String>();
+    private static ArrayList<String> setList = new ArrayList<String>();
+    private static ArrayList<String> noteList = new ArrayList<String>();
+    
+    private static Document getPageDocument(String url) {
+    	if (url.startsWith("http")) {
+	    	SchemeRegistry schemeRegistry = new SchemeRegistry();
+	        schemeRegistry.register(
+	                new Scheme("https", 443, SSLSocketFactory.getSocketFactory()));
+	
+	        HttpParams params = new BasicHttpParams();
+	
+	        PoolingClientConnectionManager mgr = new PoolingClientConnectionManager(
+	                schemeRegistry);
+	
+	        HttpClient client = new DefaultHttpClient(mgr, params);
+	        HttpPost postMethod = new HttpPost(
+	                "https://whsec1.davematthewsband.com/login.asp");
+	        postMethod.addHeader("Accept",
+	                "text/html, application/xhtml+xml, */*");
+	        postMethod.addHeader("Referer",
+	                "https://whsec1.davematthewsband.com/login.asp");
+	        postMethod.addHeader("Accept-Language", "en-US");
+	        postMethod.addHeader("User-Agent",
+	                "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)");
+	        postMethod.addHeader("Content-Type",
+	                "application/x-www-form-urlencoded");
+	        postMethod.addHeader("Accept-Encoding", "gzip, deflate");
+	        postMethod.addHeader("Host", "whsec1.davematthewsband.com");
+	        postMethod.addHeader("Connection", "Keep-Alive");
+	        postMethod.addHeader("Cache-Control", "no-cache");
+	        postMethod.addHeader("Cookie",
+	                "MemberInfo=isInternational=&MemberID=&UsrCount=04723365306&ExpDate=&Username=; ASPSESSIONIDQQTDRTTC=PKEGDEFCJBLAIKFCLAHODBHN; __utma=10963442.556285711.1366154882.1366154882.1366154882.1; __utmb=10963442.2.10.1366154882; __utmc=10963442; __utmz=10963442.1366154882.1.1.utmcsr=warehouse.dmband.com|utmccn=(referral)|utmcmd=referral|utmcct=/; ASPSESSIONIDSSDRTSRA=HJBPPKFCJGEJKGNEMJJMAIPN");
+	        
+	        List<NameValuePair> nameValuePairs =
+	                new ArrayList<NameValuePair>();
+	        nameValuePairs.add(new BasicNameValuePair("the_url", ""));
+	        nameValuePairs.add(new BasicNameValuePair("form_action", "login"));
+	        nameValuePairs.add(new BasicNameValuePair("Username", "fateman"));
+	        nameValuePairs.add(new BasicNameValuePair("Password", "nintendo"));
+	        nameValuePairs.add(new BasicNameValuePair("x", "0"));
+	        nameValuePairs.add(new BasicNameValuePair("y", "0"));
+	        try {
+	            postMethod.setEntity(new UrlEncodedFormEntity(nameValuePairs));
+	        } catch (UnsupportedEncodingException e1) {}
+	        HttpResponse response = null;
+	        try {
+	            response = client.execute(postMethod);
+	        } catch (IOException e1) {}
+	        if (response == null || (response.getStatusLine().getStatusCode() !=
+	                200 && response.getStatusLine().getStatusCode() != 302))
+	            lastSong = "Error";
+	        HttpGet getMethod = new HttpGet(url);
+	        StringBuilder sb = new StringBuilder();
+	        String html = null;
+	        if (!url.startsWith("https"))
+	        	client = new DefaultHttpClient();
+	        try {
+	            response = client.execute(getMethod);
+	            html = EntityUtils.toString(response.getEntity(), "UTF-8");
+	            html = StringEscapeUtils.unescapeHtml4(html);
+	        } catch (ClientProtocolException e1) {
+	            System.out.println("Failed to connect to " +
+	                    getMethod.getURI().toASCIIString());
+	            e1.printStackTrace();
+	        } catch (IOException e1) {
+	            System.out.println("Failed to get setlist from " +
+	                    getMethod.getURI().toASCIIString());
+	            e1.printStackTrace();
+	        }
+	        return Jsoup.parse(html);
+    	}
+    	else
+    		return Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile(url)));
+    }
+    
+    private static void liveSetlist(String url) {
+    	Document doc = getPageDocument(url);
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testLive.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testOne.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testTwo.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testThree.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testFour.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testFive.txt")));
+    	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testSix.txt")));
+    	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testSeven.txt")));
+    	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testEight.txt")));
+    	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testNine.txt")));
+        //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("/home/testLive.txt")));
+        char badChar = 65533;
+        char apos = 39;
+        char endChar = 160;
+        StringBuilder locString = new StringBuilder();
+        String dateString = null;
+        StringBuilder setString = new StringBuilder();
+        int numTicketings = 0;
+        boolean br = false;
+        boolean b = false;
+        int slot = 0;
+        String setlistId = null;
+        String lastPlay = null;
+        boolean hasSetCloser = false;
+        hasEncore = false;
+        hasGuests = false;
+        hasSegue = false;
+        firstBreak = false;
+        secondBreak = false;
+        boolean hasFont = false;
+        String divStyle = "";
+        String setlistStyle = "font-family:sans-serif;font-size:14;font-weight:normal;margin-top:15px;margin-left:15px;";
+        String locStyle = "padding-bottom:12px;padding-left:3px;color:#3995aa;";
+        String setStyle = "Color:#000000;Position:Absolute;Top:";
+        String divText = "";
+        TreeMap<Integer, String> songMap = new TreeMap<Integer, String>();
+        int currentLoc = 0;
+        String currSong = "";
+        boolean oneBreak = false;
+        boolean twoBreak = false;
+        if (doc != null) {
+        	// Find nodes in the parent setlist node, for both types
+            for (Node node : doc.body().getElementsByAttributeValue("style", setlistStyle).first().childNodes()) {
+            	// Location and parent setlist node
+            	if (node.nodeName().equals("div")) {
+            		divStyle = node.attr("style");
+            		// Location node
+            		if (divStyle.equals(locStyle)) {
+            			for (Node locNode : node.childNodes()) {
+                            if (!(locNode instanceof Comment)) {
+                                if (locNode instanceof TextNode) {
+                                	locList.add(StringUtils.trim(((TextNode)locNode).text()));
+                                }
+                            }
+            			}
+            		}
+            		// If the song nodes are divs
+            		else {
+            			// All song divs
+            			Elements divs = ((Element) node).getElementsByTag("div");
+                        for (Element div : divs) {
+                        	if (div.hasAttr("style")) {
+                        		divStyle = div.attr("style");
+                        		if (divStyle.startsWith(setStyle)) {
+                    				String[] locations = divStyle.split(setStyle);
+                    				currentLoc = Integer.parseInt(locations[1].split(";")[0]);
+                    				divText = div.ownText();
+                    				divText = StringUtils.remove(divText, endChar);
+                    				String[] songs = divText.split("\\d+[\\.]{1}");
+                    				if (songs.length > 1) {
+                    					currSong = StringUtils.replaceChars(
+                                        		songs[1], badChar, apos);;
+                    					Elements imgs = div.getElementsByTag("img");
+                    					if (!imgs.isEmpty()) {
+                    						currSong = currSong.concat(" ->");
+                    						hasSegue = true;
+                    					}
+                            			songMap.put(currentLoc, currSong);
+                    				}
+                    				else if (divText.toLowerCase().contains("encore"))
+                    					songMap.put(currentLoc, "Encore:");
+                    			}
+                    			else {
+                    				boolean segue = false;
+                    				divText = div.ownText();
+                    				if (!StringUtils.isBlank(divText)) {
+            	        				for (Node child : div.childNodes()) {
+        	                                if (child instanceof TextNode) {
+        	                                	String nodeText = StringUtils.remove(((TextNode)child).text(), endChar);
+        	                                	if (!StringUtils.isBlank(nodeText)) {
+        	                                		if (segue)
+        	                                			noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+        	                                		else {
+        	                                			String noteText = StringUtils.trim(nodeText);
+        	                                			if (noteText.toLowerCase().contains("show notes"))
+        	                                				noteList.add(0, "Notes:");
+        	                                			else {
+        	                                				if (hasFont)
+        	                                					noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+        	                                				else
+        	                                					noteList.add(StringUtils.trim(nodeText));
+        	                                			}
+        	                                		}
+        	                                		segue = false;
+        	                                		hasFont = false;
+        	                                	}
+        	                                }
+        	                                else if (child.nodeName().equals("img")) {
+        	                                	noteList.add("-> ");
+        	                                	segue = true;
+        	                                }
+        	                                else if (child.nodeName().equals("font")) {
+        	                        			List<Node> children = child.childNodes();
+        	                        			if (!children.isEmpty()) {
+        	                        				Node leaf = children.get(0);
+        	                        				if (leaf instanceof TextNode) {
+        	                        					hasFont = true;
+        	                        					noteList.add(((TextNode) leaf).text().concat(" "));
+        	                        				}
+        	                        			}
+        	                        		}
+            	            			}
+                    				}
+                    			}
+                        	}
+                        }
+            		}
+            	}
+            	else if (node instanceof TextNode) {
+                	// Get the song here
+        			divText = ((TextNode)node).text();
+        			divText = StringUtils.remove(divText, endChar);
+    				String[] songs = divText.split("\\d+[\\.]{1}");
+    				if (songs.length > 1) {
+    					currSong = StringUtils.replaceChars(
+                        		songs[1], badChar, apos);
+    					setList.add(currSong);
+    					lastSong = currSong;
+    					oneBreak = false;
+    				}
+    				else {
+    					if (!StringUtils.isBlank(divText)) {
+    						if (divText.toLowerCase().contains("encore")) {
+    							currSong = "Encore:";
+    	    					setList.add(currSong);
+    	    					lastSong = currSong;
+    						}
+    						else if (!divText.toLowerCase().contains("encore")) {
+	    						String nodeText = StringUtils.remove(divText, endChar);
+	                        	if (!StringUtils.isBlank(nodeText)) {
+	                        		if (noteList.isEmpty())
+	                					noteList.add("Notes:");
+	                        		if (hasSegue)
+	                        			noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+	                        		else {
+                        				if (hasFont)
+                        					noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+                        				else
+                        					noteList.add(StringUtils.trim(nodeText));
+                        			}
+	                        		hasFont = false;
+	                        	}
+    						}
+    					}
+    				}
+                }
+            	else if (node instanceof Element) {
+            		if (node.nodeName().equals("img")) {
+            			if ((firstBreak && !hasEncore) || secondBreak) {
+            				if (noteList.isEmpty())
+            					noteList.add("Notes:");
+                            noteList.add("-> ");
+                            hasSegue = true;
+            			}
+            			else {
+		            		currSong = setList.get(setList.size()-1).concat(" ->");
+		            		setList.set(setList.size()-1, currSong);
+		            		lastSong = currSong;
+		            		oneBreak = false;
+            			}
+            		}
+            		else if (node.nodeName().equals("font")) {
+            			List<Node> children = node.childNodes();
+            			if (!children.isEmpty()) {
+            				Node child = children.get(0);
+            				if (child instanceof TextNode) {
+            					hasFont = true;
+            					noteList.add(((TextNode) child).text().concat(" "));
+            				}
+            			}
+            		}
+            		else {
+            			if (node.nodeName().equals("br")) {
+            				if (!oneBreak) {
+            					oneBreak = true;
+            				}
+            				else {
+            					if (firstBreak && hasEncore && !secondBreak)
+            						secondBreak = true;
+            					else if (firstBreak && !hasEncore)
+            						hasEncore = true;
+            					else if (!firstBreak)
+        	    					firstBreak = true;
+            					oneBreak = false;
+            				}
+            			}
+            		}
+            	}
+            }
+            /*
+            Elements divs = body.getElementsByTag("div");
+            int currentLoc = 0;
+            String currSong = "";
+            for (Element div : divs) {
+            	if (div.hasAttr("style")) {
+            		divStyle = div.attr("style");
+            		if (divStyle.equals(locStyle)) {
+            			for (Node node : div.childNodes()) {
+                            if (!(node instanceof Comment)) {
+                                if (node instanceof TextNode) {
+                                	locList.add(StringUtils.trim(((TextNode)node).text()));
+                                }
+                            }
+            			}
+            		}
+        			else if (divStyle.startsWith(setStyle)) {
+        				String[] locations = divStyle.split(setStyle);
+        				currentLoc = Integer.parseInt(locations[1].split(";")[0]);
+        				String divText = div.ownText();
+        				divText = StringUtils.remove(divText, endChar);
+        				String[] songs = divText.split("\\d+[\\.]{1}");
+        				if (songs.length > 1) {
+        					currSong = songs[1];
+        					Elements imgs = div.getElementsByTag("img");
+        					if (!imgs.isEmpty()) {
+        						currSong = currSong.concat(" ->");
+        						hasSegue = true;
+        					}
+                			songMap.put(currentLoc, currSong);
+        				}
+        			}
+        			else {
+        				boolean segue = false;
+        				String divText = div.ownText();
+        				if (!StringUtils.isBlank(divText)) {
+	        				for (Node node : div.childNodes()) {
+	                            if (!(node instanceof Comment)) {
+	                                if (node instanceof TextNode) {
+	                                	String nodeText = StringUtils.remove(((TextNode)node).text(), endChar);
+	                                	if (!StringUtils.isBlank(nodeText)) {
+	                                		if (segue)
+	                                			noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+	                                		else
+	                                			noteList.add(StringUtils.trim(nodeText));
+	                                		segue = false;
+	                                	}
+	                                }
+	                                else if (node.nodeName().equals("img")) {
+	                                	noteList.add("-> ");
+	                                	segue = true;
+	                                }
+	                            }
+	            			}
+        				}
+        			}
+            	}
+            }
+            */
+            for (Entry<Integer, String> song : songMap.entrySet()) {
+            	currSong = song.getValue();
+            	setList.add(currSong);
+            	lastSong = currSong;
+            }
+            int segueIndex = -1;
+            int partialIndex = -1;
+            for (int i = 0; i < noteList.size(); i++) {
+            	if (noteList.get(i).contains("->"))
+            		segueIndex = i;
+            	if (noteList.get(i).startsWith("("))
+            		partialIndex = i;
+            }
+            if (segueIndex >=0) {
+            	noteList.add(noteList.remove(segueIndex));
+            	if (partialIndex >= 0) {
+            		String partial = noteList.remove(partialIndex);
+            		noteList.add(noteList.size()-1, partial);
+            	}
+            }
+            else if (partialIndex >= 0) {
+        		String partial = noteList.remove(partialIndex);
+        		noteList.add(partial);
+        	}
+            /*
+            Elements ticketings = body.getElementsByAttributeValue("id",
+                    "ticketingColText");
+            for (Element ticketing : ticketings) {
+                for (Element single : ticketing.getAllElements()) {
+                    if (single.tagName().equals("span")) {
+                    	if (locString.length() > 0) {
+                    		dateString = getSetlistDateString(locString.toString());
+                    		setlistId = createLatest(dateString);
+                    	}
+                        for (Node node : single.childNodes()) {
+                            if (!(node instanceof Comment)) {
+                                if (node instanceof TextNode) {
+                                	System.out.println("TextNode is blank: " + StringUtils.isBlank(((TextNode) node).text()));
+                                	if (lastPlay != null && !StringUtils.isBlank(((TextNode) node).text())) {
+                                		uploadSong(lastPlay, ++slot, setlistId, slot == 1, false, false);
+                                		System.out.println("TextNode nulling lastPlay");
+                                		System.out.println("TextNode: '" + ((TextNode) node).text() + "'");
+                                		lastPlay = null;
+                                	}
+                                    sb.append(StringUtils.remove(((TextNode) node).text(), endChar));
+                                } else {
+                                    if (node.nodeName().equals("div")) {
+                                        // End current string
+                                        if (setString.length() > 0)
+                                            setString.append("\n");
+                                        if (StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .startsWith("Encore") && !hasEncore) {
+                                            hasEncore = true;
+                                            if (lastPlay != null && !hasSetCloser) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, true, false);
+                                            	hasSetCloser = true;
+                                            	System.out.println("div nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                            if (!firstBreak) {
+                                                setString.append("\n");
+                                                firstBreak = true;
+                                            }
+                                            if (sb.indexOf(":") == -1) {
+                                            	sb.setLength(0);
+                                            	sb.append("Encore:");
+                                            }
+                                        }
+                                        else {
+                                        	lastPlay = StringUtils.replaceChars(
+                                					StringUtils.strip(
+                                                            sb.toString()),
+                                                            badChar, apos);
+                                        }
+                                        setString.append(
+                                            StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos));
+                                        setString.trimToSize();
+                                        sb.setLength(0);
+                                    }
+                                    else if (node.nodeName().equals("br")) {
+                                        if (sb.length() > 0 &&
+                                                !StringUtils.isBlank(
+                                                        sb.toString())) {
+                                            if (setString.length() > 0)
+                                                setString.append("\n");
+                                            setString.append(
+                                                StringUtils.replaceChars(
+                                                    StringUtils.strip(
+                                                            sb.toString()),
+                                                            badChar, apos));
+                                            setString.trimToSize();
+                                            sb.setLength(0);
+                                        }
+                                        if (firstBreak && !secondBreak && hasEncore) {
+                                            setString.append("\n");
+                                            secondBreak = true;
+                                            if (lastPlay != null) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, false, true);
+                                            	System.out.println("br nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                        }
+                                        if (!firstBreak) {
+                                        	System.out.println("NOT firstBreak");
+                                        	System.out.println("lastPlay: " + lastPlay);
+                                        	System.out.println("hasSetCloser: " + hasSetCloser);
+                                            setString.append("\n");
+                                            firstBreak = true;
+                                            if (lastPlay != null && !hasSetCloser) {
+                                            	uploadSong(lastPlay, ++slot, setlistId, slot == 1, true, false);
+                                            	hasSetCloser = true;
+                                            	System.out.println("!firstBreak nulling lastPlay");
+                                            	lastPlay = null;
+                                            }
+                                        }
+                                    }
+                                    else if (node.nodeName().equals("img")) {
+                                        sb.append("->");
+                                        hasSegue = true;
+                                        if (!hasGuests) {
+                                            lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                    StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                        }
+                                    }
+                                    else if (node instanceof Element) {
+                                        sb.append(((Element) node).text());
+                                        if (!StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .equals("Encore:") && !hasGuests) {
+                                            hasGuests = true;
+                                            lastSong = StringUtils.chomp(setString.toString()).substring(
+                                                    StringUtils.chomp(setString.toString()).lastIndexOf("\n")+1);
+                                        }
+                                        else if (StringUtils.replaceChars(
+                                                StringUtils.strip(
+                                                        sb.toString()),
+                                                        badChar, apos)
+                                                .equals("Encore:")) {
+                                            hasEncore = true;
+                                            lastSong = StringUtils.strip(sb.toString());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!hasSegue && !hasGuests) {
+                            lastSong = StringUtils.strip(setString.toString()).substring(
+                                    StringUtils.strip(setString.toString()).lastIndexOf("\n")+1);
+                        }
+                        if (setString.length() > 0)
+                            setString.append("\n");
+                        setString.append(
+                            StringUtils.replaceChars(
+                                StringUtils.strip(
+                                        sb.toString()),
+                                        badChar, apos));
+                        setString.trimToSize();
+                    }
+                    else if (setString.length() == 0) {
+                        if (single.id().equals("ticketingColText"))
+                            numTicketings++;
+                        if (numTicketings == 2 && single.nodeName().equals("div")) {
+                            locString.append(single.ownText());
+                            locString.append("\n");
+                        }
+                        if (single.tagName().equals("br"))
+                            br = true;
+                        else if (single.tagName().equals("b"))
+                            b = true;
+                        if (br && b) {
+                            locString.append(single.ownText());
+                            locString.append("\n");
+                            br = false;
+                            b = false;
+                        }
+                    }
+                }
+            }
+            */
+        }
+    }
+    /*
     private static String getSetlistDateString(String latestSetlist) {
         SimpleDateFormat dateFormat = new SimpleDateFormat("MM/dd/yyyy");
         Date date = null;
@@ -643,11 +1630,24 @@ public class SetlistOneMain {
         }
         return dateString;
     }
-    
+    */
+    private static String getNewSetlistDateString(String dateLine) {
+        SimpleDateFormat dateFormat = new SimpleDateFormat("MMM dd yyyy");
+        Date date = null;
+        String dateString = null;
+        try {
+            date = dateFormat.parse(dateLine);
+            dateFormat = new SimpleDateFormat(DATE_FORMAT);
+            dateString = dateFormat.format(date.getTime());
+        } catch (ParseException e2) {
+            System.out.println("Failed to parse date from " + dateLine);
+            e2.printStackTrace();
+        }
+        return dateString;
+    }    
     
     private static String getExpireDateString() {
-        SimpleDateFormat dateFormat = new SimpleDateFormat(
-                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+        SimpleDateFormat dateFormat = new SimpleDateFormat(DATE_FORMAT);
         dateFormat.setTimeZone(TimeZone.getTimeZone("UTC"));
         Date date = new Date();
         date.setTime(System.currentTimeMillis() + 300000); // 5 minutes
@@ -655,7 +1655,7 @@ public class SetlistOneMain {
     }
     
     private static String getSetlist(String latestSetlist) {
-        String dateString = getSetlistDateString(latestSetlist);
+        String dateString = getNewSetlistDateString(latestSetlist);
         System.out.println("getSetlist dateString: " + dateString);
         if (dateString == null)
             return null;
@@ -1084,7 +2084,7 @@ public class SetlistOneMain {
     private static String currDateString = null;
     
     private static String getSetlistJsonString(String latestSetlist) {
-        currDateString = getSetlistDateString(latestSetlist);
+        currDateString = getNewSetlistDateString(latestSetlist);
         JsonNodeFactory factory = JsonNodeFactory.instance;
         ObjectNode rootNode = factory.objectNode();
         ObjectNode dateNode = factory.objectNode();
@@ -1383,11 +2383,12 @@ public class SetlistOneMain {
             		return filename.endsWith(".txt");
         		}
         	});
-            String dateString = getSetlistDateString(latestSetlist);
-            Date newDate = getDateFromString(dateString);
+            String dateString = getNewSetlistDateString(latestSetlist);
+            Date newDate = convertStringToDate(DATE_FORMAT, dateString);
             for (int i = 0; i < files.length; i++) {
             	if (files[i].startsWith("setlist")) {
-            		if (getDateFromString(files[i].substring(7)).after(newDate)) {
+            		if (convertStringToDate(DATE_FORMAT,
+            				files[i].substring(7)).after(newDate)) {
             			System.out.println("older setlist file found!");
             			return 1;
             		}
@@ -1444,18 +2445,6 @@ public class SetlistOneMain {
         if (objectId == null)
             objectId = postSetlist(getNewSetlistJsonString(dateString));
         return objectId;
-    }
-    
-    private static Date getDateFromString(String dateString) {
-    	SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
-        Date date = null;
-        try {
-            date = dateFormat.parse(dateString);
-        } catch (ParseException e) {
-            System.out.println("Failed to parse date from " + dateString);
-            e.printStackTrace();
-        }
-        return date;
     }
     
     private static boolean uploadPlay(String songId, Integer slot, String setlistId, boolean isOpener, boolean isSetCloser, boolean isEncoreCloser) {
@@ -1638,5 +2627,125 @@ public class SetlistOneMain {
         return "\"" + s + "\"";
     }
     
+    private static void postTweet(String message, File file) {
+    	try {
+    		ConfigurationBuilder cb = new ConfigurationBuilder();
+    		cb.setDebugEnabled(true)
+    		  .setOAuthConsumerKey("z9rtG1MwLm1EHjIoN2kYAw")
+    		  .setOAuthConsumerSecret("n5eF6tVtORPTFVSauSA8IaIVY1jORuUVbwRPHKbXWyg")
+    		  .setOAuthAccessToken("611044728-gWpnzlKfeS7z2J8hoeZr1IGDhxuNJhHSvJhHLNvh")
+    		  .setOAuthAccessTokenSecret("MrXI5FkfePtdUMwIc94nvq5KCA9pF4z5Q4Hq7eAZU");
+            Twitter twitter = new TwitterFactory(cb.build()).getInstance();
+    		StatusUpdate statusUpdate = new StatusUpdate(message);
+    		statusUpdate.media(file);
+    		twitter.updateStatus(statusUpdate);
+    	} catch (TwitterException te) {
+    		te.printStackTrace();
+    		System.out.println("Failed to get timeline: " + te.getMessage());
+    	}
+    }
+    
+    private static void authTweet(String message, File file) {
+    	try {
+    		ConfigurationBuilder cb = new ConfigurationBuilder();
+    		cb.setDebugEnabled(true)
+    		  .setOAuthConsumerKey("TRta93OdLGg40RVX8ZCyw")
+    		  .setOAuthConsumerSecret("Z5w2M9gfnt8sfqYdc8sTCcComWv81xqXxuAX6NY4b8g")
+    		  .setOAuthAccessToken("16452187-bnx4cflKWH0oYJk3OxMTiLDPlo5dWAeKC3iApn8o1")
+    		  .setOAuthAccessTokenSecret("9ktTIbcDVdw8ZuqleolWCh1m59IOdZK7n1bw7jI0us");
+            Twitter twitter = new TwitterFactory(cb.build()).getInstance();
+            StatusUpdate statusUpdate = new StatusUpdate(message);
+    		statusUpdate.media(file);
+    		twitter.updateStatus(statusUpdate);
+    	} catch (TwitterException te) {
+    		te.printStackTrace();
+    		System.out.println("Failed to get timeline: " + te.getMessage());
+    	}
+    }
+    
+    private static String createScreenshot(String setlistText) {
+    	ArrayList<String> setlistList = new ArrayList<String>(Arrays.asList(setlistText.split("\n")));
+    	FileInputStream fileInput = null;
+		try {
+			fileInput = new FileInputStream(new File(SETLIST_JPG_FILENAME));
+		} catch (FileNotFoundException e2) {
+			e2.printStackTrace();
+			return null;
+		}
+    	BufferedImage img;
+    	String filename = null;
+		try {
+			img = ImageIO.read(fileInput);
+			int width = img.getWidth();
+	    	int height = img.getHeight();
+	    	BufferedImage bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+	    	Graphics2D g2d = bufferedImage.createGraphics();
+	    	g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+	    	        RenderingHints.VALUE_TEXT_ANTIALIAS_LCD_HRGB);
+	    	
+	        g2d.drawImage(img, 0, 0, null);
+	        g2d.setPaint(Color.white);
+	        Font font = null;
+	        int fontSize = 21;
+	        do {
+	        	font = new Font("Serif", Font.BOLD, --fontSize);
+		        try {
+					font = Font.createFont(Font.TRUETYPE_FONT, new File(ROBOTO_FONT_FILENAME));
+					font = font.deriveFont((float)fontSize).deriveFont(Font.BOLD);
+				} catch (FontFormatException e1) {
+					System.out.println("Couldn't create font from " + ROBOTO_FONT_FILENAME);
+					e1.printStackTrace();
+				}
+		        g2d.setFont(font);
+	        } while (!willTextFit(height, g2d, setlistList.size()+2));
+	        int currentHeight = 70;
+	        for (String line : setlistList) {
+	        	currentHeight += (addCenteredStringToImage(currentHeight, width, g2d, line) - TEXT_HEIGHT_OFFSET);
+	        }
+	        //currentHeight += (addRightStringToImage(currentHeight, width, g2d, ""));
+	        //currentHeight += (addRightStringToImage(currentHeight, width, g2d, "@dmbtrivia"));
+	        g2d.dispose();
+	    	try {
+	    		StringBuilder sb = new StringBuilder();
+	    		sb.append("setlist");
+	    		sb.append(System.currentTimeMillis());
+	    		sb.append(".jpg");
+	    		filename = sb.toString();
+		    	File file = new File(filename);
+		    	ImageIO.write(bufferedImage, "jpg", file);
+	    	} catch (IOException e) { }
+		} catch (IOException e1) {
+			e1.printStackTrace();
+		}
+		return filename;
+    }
+    
+    private static final int TEXT_HEIGHT_OFFSET = 2;
+    
+    private static int addCenteredStringToImage(int startHeight, int width, Graphics2D g2d, String string) {
+    	FontMetrics fm = g2d.getFontMetrics();
+    	int stringWidth = fm.stringWidth(string);
+        int x = (width / 2) - (stringWidth / 2);
+        int textHeight = fm.getHeight();
+        int y = textHeight + startHeight;
+        g2d.drawString(string, x, y);
+        return textHeight;
+    }
+    
+    private static int addRightStringToImage(int startHeight, int width, Graphics2D g2d, String string) {
+    	FontMetrics fm = g2d.getFontMetrics();
+    	int stringWidth = fm.stringWidth(string);
+        int x = width - stringWidth - 8;
+        int textHeight = fm.getHeight();
+        int y = textHeight + startHeight;
+        g2d.drawString(string, x, y);
+        return textHeight;
+    }
+    
+    private static boolean willTextFit(int imageHeight, Graphics2D g2d, int numLines) {
+    	FontMetrics fm = g2d.getFontMetrics();
+    	int totalTextHeight = numLines * (fm.getHeight() - TEXT_HEIGHT_OFFSET);
+    	return totalTextHeight <= imageHeight;
+    }
 
 }
