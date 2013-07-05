@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.TimeZone;
@@ -102,6 +103,7 @@ public class SetlistOneMain {
     //private static final String ROBOTO_FONT_FILENAME = "C:\\Users\\Jeff\\git\\SetlistOne\\Setlist-One\\build\\roboto.ttf";
     private static final String ROBOTO_FONT_FILENAME = "/home/roboto.ttf";
     private static final String DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
+    private static final String TWEET_DATE_FORMAT = "yyyy-MM-dd";
     private static String lastSong = "";
     private static boolean hasEncore = false;
     private static boolean hasGuests = false;
@@ -109,18 +111,60 @@ public class SetlistOneMain {
     private static boolean firstBreak = false;
     private static boolean secondBreak = false;
     
+    private static Calendar cal;
+    private static long endTime = -1;
+    
+    private static String setlistText = "";
+    
+    private static String currDateString = null;
+    private static String tweetDateString = null;
+    
     // C:\Dropbox\workspace\Setlist-One>c:\Dropbox\apache-ant-1.9.0\bin\ant
     
+    // java -jar /home/Setlist-One.jar 14400000 >> ...
+    
     public static void main(String args[]) {
-        Calendar cal = Calendar.getInstance(TimeZone.getDefault());
+    	String url = null;
+    	long duration = 0;
+    	for (int i = 0; i < args.length; i++) {
+    		if (args[i].startsWith("http"))
+    			url = args[i];
+    		else
+    			duration = Long.valueOf(args[i]);
+    	}
+    	endTime = System.currentTimeMillis() + duration;
+    	do {
+    		runSetlistCheck(url);
+    		try {
+				Thread.sleep(10000);
+			} catch (InterruptedException e) {}
+    	} while (endTime >= System.currentTimeMillis());
+    	System.out.println("duration: " + duration);
+    	if (duration > 0) {
+    		StringBuilder sb = new StringBuilder();
+    		sb.append("[Final DMB");
+    		sb.append(tweetDateString);
+    		sb.append(" Setlist]");
+    		System.out.println(sb.toString());
+    		postTweet(sb.toString(), new File(createScreenshot(setlistText)));
+    	}
+    }
+    
+    private static void runSetlistCheck(String url) {
+    	cal = Calendar.getInstance(TimeZone.getDefault());
         cal.setTimeInMillis(System.currentTimeMillis());
         System.out.println(cal.getTime().toString());
         System.out.println(Charset.defaultCharset().displayName());
-        if (args.length > 0)
-        	liveSetlist(args[0]);
+        /*
+        postNotification(getPushJsonString("Show begins @ 8:05 pm EDT", "Jun 16 2013\nDave Matthews Band\nComcast Center\nMansfield, MA\n\nShow begins @ 8:05 pm EDT\n",
+                getExpireDateString()));
+        */
+        if (url != null)
+        	liveSetlist(url);
         else	
         	liveSetlist("https://whsec1.davematthewsband.com/backstage.asp");
         currDateString = getNewSetlistDateString(locList.get(0));
+        tweetDateString = getTweetDateString(locList.get(0));
         StringBuilder sb = new StringBuilder();
         if (locList.size() < 4)
         	locList.add(1, "Dave Matthews Band");
@@ -135,16 +179,21 @@ public class SetlistOneMain {
         	sb.append(set);
         	sb.append("\n");
         }
-        if (!noteList.isEmpty()) {
-        	sb.append("\n");
-        	for (String note : noteList) {
-            	sb.append(note);
-            	sb.append("\n");
+        if (!noteMap.isEmpty()) {
+        	for (Entry<Integer, String> note : noteMap.entrySet()) {
+        		sb.append("\n");
+            	sb.append(note.getValue());
         	}
         }
-        String setlistText = sb.toString();
+        else if (!noteList.isEmpty()) {
+        	for (String note : noteList) {
+        		sb.append("\n");
+            	sb.append(note);
+        	}
+        }
+        setlistText = sb.toString();
+        System.out.println(setlistText);
         // createScreenshot(setlistText);
-        System.out.print(setlistText);
         String setlistFile = SETLIST_FILENAME +
                 (currDateString.replace('/', '_')) + ".txt";
         String lastSongFile = LAST_SONG_FILENAME +
@@ -163,9 +212,11 @@ public class SetlistOneMain {
             // 0 if a new setlist (latest)
             // 1 if there is a newer date available already
             int newDate = uploadLatest(setlistText);
+            /*
             if (getLatestDate().after(convertStringToDate(DATE_FORMAT,
             		currDateString)))
             	return;
+            	*/
             String lastSongFromFile = readStringFromFile(lastSongFile);
             if (newDate == 0 || (newDate == -1 &&
             		!lastSongFromFile.equals(lastSong))) {
@@ -174,9 +225,15 @@ public class SetlistOneMain {
             		System.out.println("POST NOTIFICATION AND TWEET: " + lastSong);
 	                postNotification(getPushJsonString(lastSong, setlistText,
 	                        getExpireDateString()));
-	                sb.append("Current song: [");
-	                sb.append(lastSong);
-	                sb.append("]");
+	                if (lastSong.toLowerCase().startsWith("show begins")) {
+	                	sb.append("DMB ");
+	                	sb.append(lastSong);
+	                }
+	                else {
+		                sb.append("Current DMB Song & Setlist: [");
+		                sb.append(lastSong);
+		                sb.append("]");
+	                }
 	                postTweet(sb.toString(), new File(createScreenshot(setlistText)));
             	}
             	else {
@@ -192,6 +249,10 @@ public class SetlistOneMain {
                         getExpireDateString()));
             }
         }
+        locList.clear();
+        setList.clear();
+        noteList.clear();
+        noteMap.clear();
         /*
         sb.setLength(0);
         sb.append("Current song: [");
@@ -1081,6 +1142,7 @@ public class SetlistOneMain {
     private static ArrayList<String> locList = new ArrayList<String>();
     private static ArrayList<String> setList = new ArrayList<String>();
     private static ArrayList<String> noteList = new ArrayList<String>();
+    private static TreeMap<Integer, String> noteMap = new TreeMap<Integer, String>();
     
     private static Document getPageDocument(String url) {
     	if (url.startsWith("http")) {
@@ -1129,9 +1191,9 @@ public class SetlistOneMain {
 	        } catch (IOException e1) {}
 	        if (response == null || (response.getStatusLine().getStatusCode() !=
 	                200 && response.getStatusLine().getStatusCode() != 302))
-	            lastSong = "Error";
+	        	System.out.println("Failed to get response from to " +
+	                    postMethod.getURI().toASCIIString());
 	        HttpGet getMethod = new HttpGet(url);
-	        StringBuilder sb = new StringBuilder();
 	        String html = null;
 	        if (!url.startsWith("https"))
 	        	client = new DefaultHttpClient();
@@ -1166,6 +1228,7 @@ public class SetlistOneMain {
     	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testSeven.txt")));
     	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testEight.txt")));
     	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testNine.txt")));
+    	//Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("C:\\Users\\Jeff\\Desktop\\testTen.txt")));
         //Document doc = Jsoup.parse(StringEscapeUtils.unescapeHtml4(readStringFromFile("/home/testLive.txt")));
         char badChar = 65533;
         char apos = 39;
@@ -1185,8 +1248,13 @@ public class SetlistOneMain {
         hasSegue = false;
         firstBreak = false;
         secondBreak = false;
-        boolean hasFont = false;
+        boolean hasGuest = false;
+        boolean firstPartial = false;
+        boolean lastPartial = false;
         String divStyle = "";
+        String divTemp = "";
+        int divStyleLocation = -1;
+        String oldNote = "";
         String setlistStyle = "font-family:sans-serif;font-size:14;font-weight:normal;margin-top:15px;margin-left:15px;";
         String locStyle = "padding-bottom:12px;padding-left:3px;color:#3995aa;";
         String setStyle = "Color:#000000;Position:Absolute;Top:";
@@ -1196,6 +1264,7 @@ public class SetlistOneMain {
         String currSong = "";
         boolean oneBreak = false;
         boolean twoBreak = false;
+        String fontText = "";
         if (doc != null) {
         	// Find nodes in the parent setlist node, for both types
             for (Node node : doc.body().getElementsByAttributeValue("style", setlistStyle).first().childNodes()) {
@@ -1219,6 +1288,10 @@ public class SetlistOneMain {
                         for (Element div : divs) {
                         	if (div.hasAttr("style")) {
                         		divStyle = div.attr("style");
+                        		if (divStyle.contains("Top:")) {
+	                        		divTemp = divStyle.substring(divStyle.indexOf("Top:"));
+	                        		divStyleLocation = Integer.parseInt(divTemp.substring(4, divTemp.indexOf(";")));
+                        		}
                         		if (divStyle.startsWith(setStyle)) {
                     				String[] locations = divStyle.split(setStyle);
                     				currentLoc = Integer.parseInt(locations[1].split(";")[0]);
@@ -1243,27 +1316,55 @@ public class SetlistOneMain {
                     				divText = div.ownText();
                     				if (!StringUtils.isBlank(divText)) {
             	        				for (Node child : div.childNodes()) {
+            	        					oldNote = noteMap.get(divStyleLocation);
+	                                		if (oldNote == null)
+	                                			oldNote = "";
         	                                if (child instanceof TextNode) {
         	                                	String nodeText = StringUtils.remove(((TextNode)child).text(), endChar);
         	                                	if (!StringUtils.isBlank(nodeText)) {
-        	                                		if (segue)
+        	                                		if (segue) {
+        	                                			System.out.println("segue: " + divStyleLocation);
+        	                                			if (divStyleLocation > -1)
+        	                                				noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(nodeText)));
         	                                			noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+        	                                		}
         	                                		else {
         	                                			String noteText = StringUtils.trim(nodeText);
-        	                                			if (noteText.toLowerCase().contains("show notes"))
+        	                                			if (noteText.toLowerCase().contains("show notes")) {
+        	                                				System.out.println("show notes: " + divStyleLocation);
+        	                                				if (divStyleLocation > -1)
+        	                                					noteMap.put(divStyleLocation, oldNote.concat("Notes:"));
         	                                				noteList.add(0, "Notes:");
+        	                                			}
         	                                			else {
-        	                                				if (hasFont)
+        	                                				if (hasGuest) {
+        	                                					System.out.println("hasGuest: " + divStyleLocation);
+        	                                					if (divStyleLocation > -1)
+        	                                						noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(nodeText)));
         	                                					noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
-        	                                				else
+        	                                				}
+        	                                				else if (firstPartial || lastPartial) {
+        	                                					System.out.println("partial: " + divStyleLocation);
+        	                                					if (divStyleLocation > -1)
+        	                                						noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(nodeText)));
+        	                                					noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
+        	                                				}
+        	                                				else {
+        	                                					System.out.println("other: " + divStyleLocation);
+        	                                					if (divStyleLocation > -1)
+        	                                						noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(nodeText)));
         	                                					noteList.add(StringUtils.trim(nodeText));
+        	                                				}
         	                                			}
         	                                		}
         	                                		segue = false;
-        	                                		hasFont = false;
+        	                                		hasGuest = false;
         	                                	}
         	                                }
         	                                else if (child.nodeName().equals("img")) {
+        	                                	System.out.println("img: " + divStyleLocation);
+        	                                	if (divStyleLocation > -1)
+        	                                		noteMap.put(divStyleLocation, oldNote.concat("\n").concat("-> "));
         	                                	noteList.add("-> ");
         	                                	segue = true;
         	                                }
@@ -1272,8 +1373,26 @@ public class SetlistOneMain {
         	                        			if (!children.isEmpty()) {
         	                        				Node leaf = children.get(0);
         	                        				if (leaf instanceof TextNode) {
-        	                        					hasFont = true;
-        	                        					noteList.add(((TextNode) leaf).text().concat(" "));
+        	                        					fontText = ((TextNode) leaf).text();
+        	                        					if (fontText.contains("(")) {
+        	                        						firstPartial = true;
+        	                        						System.out.println("partial: " + divStyleLocation);
+        	                        						if (divStyleLocation > -1)
+        	                        							noteMap.put(divStyleLocation, oldNote.concat("\n").concat(StringUtils.trim(fontText)));
+        	                        						noteList.add(fontText);
+        	                        					} else if (fontText.contains(")")) {
+        	                        						lastPartial = true;
+        	                        						System.out.println("partial: " + divStyleLocation);
+        	                        						if (divStyleLocation > -1)
+        	                        							noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(fontText).concat(" ")));
+        	                        						noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(fontText).concat(" ")));
+        	                        					} else {
+        	                        						hasGuest = true;
+        	                        						System.out.println("guest: " + divStyleLocation);
+        	                        						if (divStyleLocation > -1)
+        	                        							noteMap.put(divStyleLocation, oldNote.concat(StringUtils.trim(fontText).concat(" ")));
+        	                        						noteList.add(fontText.concat(" "));
+        	                        					}
         	                        				}
         	                        			}
         	                        		}
@@ -1311,12 +1430,12 @@ public class SetlistOneMain {
 	                        		if (hasSegue)
 	                        			noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
 	                        		else {
-                        				if (hasFont)
+                        				if (hasGuest)
                         					noteList.set(noteList.size()-1, noteList.get(noteList.size()-1).concat(StringUtils.trim(nodeText)));
                         				else
                         					noteList.add(StringUtils.trim(nodeText));
                         			}
-	                        		hasFont = false;
+	                        		hasGuest = false;
 	                        	}
     						}
     					}
@@ -1342,7 +1461,7 @@ public class SetlistOneMain {
             			if (!children.isEmpty()) {
             				Node child = children.get(0);
             				if (child instanceof TextNode) {
-            					hasFont = true;
+            					hasGuest = true;
             					noteList.add(((TextNode) child).text().concat(" "));
             				}
             			}
@@ -1364,6 +1483,8 @@ public class SetlistOneMain {
             			}
             		}
             	}
+            	//System.out.println(noteMap.toString());
+            	//System.out.println(noteList.toString());
             }
             /*
             Elements divs = body.getElementsByTag("div");
@@ -1644,7 +1765,22 @@ public class SetlistOneMain {
             e2.printStackTrace();
         }
         return dateString;
-    }    
+    }
+    
+    private static String getTweetDateString(String dateLine) {
+        SimpleDateFormat dateFormat = new SimpleDateFormat("MMM dd yyyy");
+        Date date = null;
+        String dateString = null;
+        try {
+            date = dateFormat.parse(dateLine);
+            dateFormat = new SimpleDateFormat(TWEET_DATE_FORMAT);
+            dateString = dateFormat.format(date.getTime());
+        } catch (ParseException e) {
+            System.out.println("Failed to parse date from " + dateLine);
+            e.printStackTrace();
+        }
+        return dateString;
+    }
     
     private static String getExpireDateString() {
         SimpleDateFormat dateFormat = new SimpleDateFormat(DATE_FORMAT);
@@ -2080,8 +2216,6 @@ public class SetlistOneMain {
         }
         return true;
     }
-    
-    private static String currDateString = null;
     
     private static String getSetlistJsonString(String latestSetlist) {
         currDateString = getNewSetlistDateString(latestSetlist);
@@ -2628,21 +2762,29 @@ public class SetlistOneMain {
     }
     
     private static void postTweet(String message, File file) {
-    	try {
-    		ConfigurationBuilder cb = new ConfigurationBuilder();
-    		cb.setDebugEnabled(true)
-    		  .setOAuthConsumerKey("z9rtG1MwLm1EHjIoN2kYAw")
-    		  .setOAuthConsumerSecret("n5eF6tVtORPTFVSauSA8IaIVY1jORuUVbwRPHKbXWyg")
-    		  .setOAuthAccessToken("611044728-gWpnzlKfeS7z2J8hoeZr1IGDhxuNJhHSvJhHLNvh")
-    		  .setOAuthAccessTokenSecret("MrXI5FkfePtdUMwIc94nvq5KCA9pF4z5Q4Hq7eAZU");
-            Twitter twitter = new TwitterFactory(cb.build()).getInstance();
-    		StatusUpdate statusUpdate = new StatusUpdate(message);
-    		statusUpdate.media(file);
-    		twitter.updateStatus(statusUpdate);
-    	} catch (TwitterException te) {
-    		te.printStackTrace();
-    		System.out.println("Failed to get timeline: " + te.getMessage());
-    	}
+    	boolean failed = false;
+    	ConfigurationBuilder cb = new ConfigurationBuilder();
+		cb.setDebugEnabled(true)
+		  .setOAuthConsumerKey("z9rtG1MwLm1EHjIoN2kYAw")
+		  .setOAuthConsumerSecret("n5eF6tVtORPTFVSauSA8IaIVY1jORuUVbwRPHKbXWyg")
+		  .setOAuthAccessToken("611044728-gWpnzlKfeS7z2J8hoeZr1IGDhxuNJhHSvJhHLNvh")
+		  .setOAuthAccessTokenSecret("MrXI5FkfePtdUMwIc94nvq5KCA9pF4z5Q4Hq7eAZU");
+        Twitter twitter = new TwitterFactory(cb.build()).getInstance();
+		StatusUpdate statusUpdate = new StatusUpdate(message);
+		statusUpdate.media(file);
+		do {
+	    	try {
+				twitter.updateStatus(statusUpdate);
+				failed = false;
+	    	} catch (TwitterException te) {
+	    		te.printStackTrace();
+	    		System.out.println("Failed to get timeline: " + te.getMessage());
+	    		failed = true;
+	    		try {
+					Thread.sleep(1000);
+				} catch (InterruptedException e) {}
+	    	}
+		} while (failed);
     }
     
     private static void authTweet(String message, File file) {
