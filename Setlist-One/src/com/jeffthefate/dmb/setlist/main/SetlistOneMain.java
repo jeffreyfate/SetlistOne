@@ -173,11 +173,21 @@ public class SetlistOneMain {
         	sb.append("\n");
         }
         sb.append("\n");
+        boolean hasEncore = false;
         for (String set : setList) {
-        	if (set.toLowerCase().equals("encore:"))
+        	if (set.toLowerCase().equals("encore:")) {
+        		if (!hasEncore) {
+        			sb.append("\n");
+        			sb.append(set);
+        			sb.append("\n");
+        		}
+        		hasEncore = true;
+        	}
+        	else {
+        		sb.append(set);
         		sb.append("\n");
-        	sb.append(set);
-        	sb.append("\n");
+        		hasEncore = false;
+        	}
         }
         if (!noteMap.isEmpty()) {
         	for (Entry<Integer, String> note : noteMap.entrySet()) {
@@ -315,6 +325,9 @@ public class SetlistOneMain {
     }
     
     private static String stripSpecialCharacters(String song) {
+    	song = StringUtils.remove(song, "(");
+    	song = StringUtils.remove(song, ")");
+    	song = StringUtils.remove(song, "->");
     	song = StringUtils.remove(song, "*");
     	song = StringUtils.remove(song, "+");
     	song = StringUtils.remove(song, "~");
